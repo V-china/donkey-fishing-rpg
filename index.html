@@ -69,6 +69,7 @@ window.addEventListener('resize', resize);
 const TILE = 48;
 const MAP_W = 120, MAP_H = 80;
 const RIVER_Y_START = 38, RIVER_Y_END = 42;
+const VEG_X_START = 50, VEG_X_END = 70;
 const SPAWN_X = 60, SPAWN_Y = 36;
 
 // ---- 地形类型 ----
@@ -96,13 +97,13 @@ for (let y = 0; y < MAP_H; y++) {
     if (y >= RIVER_Y_START && y <= RIVER_Y_END) {
       map[y][x] = T.RIVER;
     }
-    // 河岸沙地
-    else if (y === RIVER_Y_START - 1 || y === RIVER_Y_END + 1) {
-      map[y][x] = T.SAND;
-    }
-    // 菜地区域（出生点周围）
-    else if (x >= SPAWN_X - 6 && x <= SPAWN_X + 6 && y >= SPAWN_Y - 4 && y <= SPAWN_Y + 2) {
-      map[y][x] = T.VEGFIELD;
+    // 河岸：菜地段用菜地，其余用沙地
+    else if (y === RIVER_Y_START - 1 || y === RIVER_Y_START - 2 || y === RIVER_Y_END + 1 || y === RIVER_Y_END + 2) {
+      if (x >= VEG_X_START && x <= VEG_X_END) {
+        map[y][x] = T.VEGFIELD;
+      } else {
+        map[y][x] = T.SAND;
+      }
     }
     else {
       // 随机地形
@@ -122,8 +123,8 @@ for (let y = RIVER_Y_START - 1; y <= RIVER_Y_END + 1; y++) {
   map[y][90] = T.BRIDGE;
 }
 
-// 菜地里加小路通向河边
-for (let y = SPAWN_Y + 2; y <= RIVER_Y_START - 1; y++) {
+// 出生点到菜地的小路
+for (let y = SPAWN_Y; y <= RIVER_Y_START - 3; y++) {
   map[y][SPAWN_X] = T.PATH;
 }
 
@@ -175,18 +176,18 @@ const NPC_IDLE_LINES = [
   '钓鱼要有耐心！',
 ];
 const NPC_VEGFIELD_LINES = [
-  '哈哈哈，你在菜地钓鱼？？',
-  '兄弟，菜地里没有鱼啊！',
-  '这是菜地不是鱼塘啊老铁！',
-  '菜地钓鱼，属实是六啊',
-  '驴小驴你搞错地方了吧，这是种菜的！',
-  '笑死，菜地能钓到鱼算我输',
-  '你这杆子甩菜地里了？',
-  '菜地钓鱼？你是认真的吗😂',
-  '建议去河边试试，菜地真没鱼...',
-  '我活了这么大岁数，头一回见菜地钓鱼的',
-  '这菜地连蚯蚓都没有，别说鱼了',
-  '驴小驴同志，河在那边→',
+  '哈哈哈，站菜地上钓河里的鱼？这段河没鱼的！',
+  '兄弟，菜地旁边这段河一条鱼都没有！',
+  '菜地这块河没鱼的，鱼都被菜味熏跑了！',
+  '站菜地上钓鱼，属实是六啊',
+  '驴小驴你挪挪位置吧，菜地这段河是真没鱼！',
+  '笑死，菜地旁边能钓到鱼算我输',
+  '这段河流过菜地，鱼都绕着游的！',
+  '菜地上钓鱼？你是认真的吗😂',
+  '建议往旁边走走，菜地这段河真没鱼...',
+  '我活了这么大岁数，菜地旁边从来没人钓到过鱼',
+  '这段河连泥鳅都没有，别说鱼了',
+  '驴小驴同志，往左或往右走走→',
 ];
 
 const npcs = [];
@@ -301,20 +302,24 @@ document.addEventListener('keydown', e => {
 // ---- 钓鱼逻辑 ----
 function tryFish() {
   if (player.fishing) return;
+  const tx = Math.floor(player.px / TILE);
+  const ty = Math.floor(player.py / TILE);
+
+  // 必须靠近河流才能钓鱼
+  if (!isNearRiver(tx, ty)) {
+    showTip('这里没有水，要到河边才能钓鱼！', 2000);
+    return;
+  }
+
   player.fishing = true;
   player.fishTimer = 0;
   player.moveDir = { x: 0, y: 0 };
   document.getElementById('fish-bar-wrap').style.display = 'block';
 
-  const tx = Math.floor(player.px / TILE);
-  const ty = Math.floor(player.py / TILE);
-
   if (isVegField(tx, ty)) {
-    showTip('你在菜地里甩出了鱼竿...', 2000);
-  } else if (isNearRiver(tx, ty)) {
-    showTip('甩竿中...感觉这里有鱼！', 1500);
+    showTip('你站在菜地上对着河甩出了鱼竿...', 2000);
   } else {
-    showTip('甩竿中...', 1500);
+    showTip('甩竿中...感觉这里有鱼！', 1500);
   }
 }
 
@@ -327,24 +332,23 @@ function finishFishing() {
   const ty = Math.floor(player.py / TILE);
 
   if (isVegField(tx, ty)) {
-    // 菜地没鱼！
+    // 站在菜地钓鱼 → 永远没鱼
     const msgs = [
-      '......一条鱼都没有。这里是菜地啊！',
-      '你盯着鱼竿看了半天，菜叶子飘过...',
-      '鱼竿纹丝不动。菜地：你礼貌吗？',
-      '钓了个寂寞。菜地表示很无语。',
-      '一阵风吹过，只有白菜叶在摇晃...',
+      '......一条鱼都没有。菜地这段河没鱼啊！',
+      '你盯着鱼竿看了半天，菜叶子飘到河里了...',
+      '鱼竿纹丝不动。河里的鱼都绕开菜地游了。',
+      '钓了个寂寞。鱼：谁去菜地那边啊？',
+      '一阵风吹过，只有白菜叶漂在水面上...',
       '鱼竿上挂了根菜叶子，权当安慰吧...',
+      '这段河的鱼好像都被菜地的味道熏跑了...',
+      '河水流过菜地，鱼纷纷绕道而行...',
     ];
     showTip(msgs[Math.floor(Math.random() * msgs.length)], 3000);
   } else {
-    // 其他地方能钓到鱼
-    const nearR = isNearRiver(tx, ty);
-    const chance = nearR ? 0.85 : 0.4;
+    // 正常河边钓鱼
+    const chance = 0.8;
     if (Math.random() < chance) {
-      const fishTypes = nearR
-        ? ['🐟 鲤鱼', '🐟 草鱼', '🐟 鲫鱼', '🐠 金鱼', '🐡 河豚', '🦐 大虾']
-        : ['🐟 小鱼', '🐟 泥鳅', '🦐 小虾'];
+      const fishTypes = ['🐟 鲤鱼', '🐟 草鱼', '🐟 鲫鱼', '🐠 金鱼', '🐡 河豚', '🦐 大虾', '🐟 鲈鱼', '🐟 鳊鱼'];
       const fish = fishTypes[Math.floor(Math.random() * fishTypes.length)];
       player.fishCount++;
       document.getElementById('fish-count').textContent = `🐟 鱼篓: ${player.fishCount} 条`;
@@ -553,8 +557,8 @@ function update(dt) {
   // 开场提示
   if (!introShown) {
     introShown = true;
-    showTip('欢迎来到平沙！\n在这里找个好地方钓鱼吧~\n' + (isMobile ? '摇杆移动，点🎣钓鱼' : 'WASD/方向键移动，E键钓鱼'), 4000);
-    setTimeout(() => showDialogue('系统', '你复活在了菜地旁边，试试在这里钓鱼吧！', 4000), 4500);
+    showTip('欢迎来到平沙！\n到河边才能钓鱼哦~\n' + (isMobile ? '摇杆移动，点🎣钓鱼' : 'WASD/方向键移动，E键钓鱼'), 4000);
+    setTimeout(() => showDialogue('系统', '你复活在了菜地旁边，走到河边试试钓鱼吧！', 4000), 4500);
   }
 
   // 钓鱼中
