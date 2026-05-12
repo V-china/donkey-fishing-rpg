@@ -1,0 +1,804 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<title>驴小驴の平沙钓鱼记</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+html, body { width: 100%; height: 100%; overflow: hidden; background: #000; touch-action: none; }
+canvas { display: block; }
+#game-container { position: relative; width: 100%; height: 100%; display: flex; justify-content: center; align-items: center; }
+/* 移动端虚拟摇杆 */
+#joystick-zone { position: absolute; left: 10px; bottom: 10px; width: 140px; height: 140px; z-index: 20; display: none; }
+#joystick-base { width: 120px; height: 120px; border-radius: 60px; background: rgba(255,255,255,0.15); border: 2px solid rgba(255,255,255,0.3); position: absolute; left: 10px; bottom: 10px; }
+#joystick-thumb { width: 50px; height: 50px; border-radius: 25px; background: rgba(255,255,255,0.4); position: absolute; left: 45px; bottom: 45px; pointer-events: none; }
+/* 移动端按钮 */
+#mobile-btns { position: absolute; right: 10px; bottom: 10px; z-index: 20; display: none; gap: 10px; }
+.mobile-btn { width: 70px; height: 70px; border-radius: 35px; background: rgba(255,255,255,0.15); border: 2px solid rgba(255,255,255,0.3); color: #fff; font-size: 14px; font-weight: bold; display: flex; align-items: center; justify-content: center; cursor: pointer; user-select: none; }
+.mobile-btn:active { background: rgba(255,255,255,0.35); }
+/* 对话框 */
+#dialogue-box { position: absolute; bottom: 160px; left: 50%; transform: translateX(-50%); background: rgba(0,0,0,0.85); color: #fff; padding: 14px 22px; border-radius: 12px; border: 2px solid #555; font-size: 15px; max-width: 90%; min-width: 280px; text-align: center; z-index: 30; display: none; line-height: 1.6; pointer-events: none; }
+#dialogue-box .npc-name { color: #f90; font-weight: bold; margin-bottom: 4px; }
+/* 提示 */
+#tip-box { position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%); background: rgba(0,0,0,0.8); color: #ff0; padding: 16px 28px; border-radius: 10px; font-size: 18px; z-index: 30; display: none; pointer-events: none; text-align: center; }
+/* 鱼篓 */
+#fish-count { position: absolute; top: 10px; right: 10px; background: rgba(0,0,0,0.7); color: #fff; padding: 8px 16px; border-radius: 8px; font-size: 15px; z-index: 20; }
+/* 钓鱼进度条 */
+#fish-bar-wrap { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); width: 200px; height: 20px; background: rgba(0,0,0,0.6); border-radius: 10px; border: 2px solid #08f; z-index: 30; display: none; overflow: hidden; }
+#fish-bar { width: 0%; height: 100%; background: linear-gradient(90deg, #08f, #0ff); border-radius: 8px; transition: width 0.1s; }
+</style>
+</head>
+<body>
+<div id="game-container">
+  <canvas id="gameCanvas"></canvas>
+  <div id="joystick-zone">
+    <div id="joystick-base"></div>
+    <div id="joystick-thumb"></div>
+  </div>
+  <div id="mobile-btns">
+    <div class="mobile-btn" id="btn-fish">🎣<br>钓鱼</div>
+  </div>
+  <div id="dialogue-box"><div class="npc-name"></div><div class="dialogue-text"></div></div>
+  <div id="tip-box"></div>
+  <div id="fish-count">🐟 鱼篓: 0 条</div>
+  <div id="fish-bar-wrap"><div id="fish-bar"></div></div>
+</div>
+
+<script>
+// ============================================================
+//  驴小驴の平沙钓鱼记
+// ============================================================
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+
+// ---- 响应式画布 ----
+let W, H, SCALE;
+function resize() {
+  W = window.innerWidth;
+  H = window.innerHeight;
+  canvas.width = W;
+  canvas.height = H;
+  SCALE = Math.max(1, Math.min(W, H) / 400);
+}
+resize();
+window.addEventListener('resize', resize);
+
+// ---- 常量 ----
+const TILE = 48;
+const MAP_W = 120, MAP_H = 80;
+const RIVER_Y_START = 38, RIVER_Y_END = 42;
+const SPAWN_X = 60, SPAWN_Y = 36;
+
+// ---- 地形类型 ----
+const T = { GRASS: 0, RIVER: 1, SAND: 2, VEGFIELD: 3, TREE: 4, ROCK: 5, BRIDGE: 6, FLOWER: 7, PATH: 8 };
+
+// ---- 地形颜色 ----
+const TILE_COLORS = {
+  [T.GRASS]: '#4a7c2e',
+  [T.RIVER]: '#2a6cb8',
+  [T.SAND]: '#c8b67a',
+  [T.VEGFIELD]: '#2d6e1e',
+  [T.TREE]: '#2d5a1a',
+  [T.ROCK]: '#777',
+  [T.BRIDGE]: '#8B6914',
+  [T.FLOWER]: '#5a8c3e',
+  [T.PATH]: '#9e8c6c',
+};
+
+// ---- 生成地图 ----
+const map = [];
+for (let y = 0; y < MAP_H; y++) {
+  map[y] = [];
+  for (let x = 0; x < MAP_W; x++) {
+    // 河流（中间横向）
+    if (y >= RIVER_Y_START && y <= RIVER_Y_END) {
+      map[y][x] = T.RIVER;
+    }
+    // 河岸沙地
+    else if (y === RIVER_Y_START - 1 || y === RIVER_Y_END + 1) {
+      map[y][x] = T.SAND;
+    }
+    // 菜地区域（出生点周围）
+    else if (x >= SPAWN_X - 6 && x <= SPAWN_X + 6 && y >= SPAWN_Y - 4 && y <= SPAWN_Y + 2) {
+      map[y][x] = T.VEGFIELD;
+    }
+    else {
+      // 随机地形
+      const r = Math.random();
+      if (r < 0.05) map[y][x] = T.TREE;
+      else if (r < 0.07) map[y][x] = T.ROCK;
+      else if (r < 0.1) map[y][x] = T.FLOWER;
+      else map[y][x] = T.GRASS;
+    }
+  }
+}
+
+// 加桥（横跨河流）
+for (let y = RIVER_Y_START - 1; y <= RIVER_Y_END + 1; y++) {
+  map[y][30] = T.BRIDGE;
+  map[y][60] = T.BRIDGE;
+  map[y][90] = T.BRIDGE;
+}
+
+// 菜地里加小路通向河边
+for (let y = SPAWN_Y + 2; y <= RIVER_Y_START - 1; y++) {
+  map[y][SPAWN_X] = T.PATH;
+}
+
+// ---- 可通行判断 ----
+function isWalkable(tx, ty) {
+  if (tx < 0 || tx >= MAP_W || ty < 0 || ty >= MAP_H) return false;
+  const t = map[ty][tx];
+  return t !== T.RIVER && t !== T.TREE && t !== T.ROCK;
+}
+
+// ---- 是否菜地 ----
+function isVegField(tx, ty) {
+  if (tx < 0 || tx >= MAP_W || ty < 0 || ty >= MAP_H) return false;
+  return map[ty][tx] === T.VEGFIELD;
+}
+
+// ---- 是否河边（紧邻河流） ----
+function isNearRiver(tx, ty) {
+  for (let dy = -1; dy <= 1; dy++) {
+    for (let dx = -1; dx <= 1; dx++) {
+      const nx = tx + dx, ny = ty + dy;
+      if (nx >= 0 && nx < MAP_W && ny >= 0 && ny < MAP_H && map[ny][nx] === T.RIVER) return true;
+    }
+  }
+  return false;
+}
+
+// ---- 玩家 ----
+const player = {
+  x: SPAWN_X, y: SPAWN_Y, // 格子坐标
+  px: SPAWN_X * TILE + TILE/2, py: SPAWN_Y * TILE + TILE/2, // 像素坐标（平滑移动）
+  dir: 0, // 0下1左2右3上
+  speed: 2.5,
+  fishing: false,
+  fishTimer: 0,
+  fishDuration: 3000,
+  fishCount: 0,
+  moveDir: { x: 0, y: 0 },
+};
+
+// ---- NPC 系统 ----
+const NPC_NAMES = ['老王', '张大妈', '李钓翁', '赵渔夫', '钱大爷', '孙小妹', '周叔叔', '吴婶婶'];
+const NPC_IDLE_LINES = [
+  '今天天气不错，适合钓鱼~',
+  '平沙的鱼可肥了！',
+  '河里的鱼最好吃！',
+  '我昨天钓了一条大鲤鱼！',
+  '这条河的鱼真多啊~',
+  '钓鱼要有耐心！',
+];
+const NPC_VEGFIELD_LINES = [
+  '哈哈哈，你在菜地钓鱼？？',
+  '兄弟，菜地里没有鱼啊！',
+  '这是菜地不是鱼塘啊老铁！',
+  '菜地钓鱼，属实是六啊',
+  '驴小驴你搞错地方了吧，这是种菜的！',
+  '笑死，菜地能钓到鱼算我输',
+  '你这杆子甩菜地里了？',
+  '菜地钓鱼？你是认真的吗😂',
+  '建议去河边试试，菜地真没鱼...',
+  '我活了这么大岁数，头一回见菜地钓鱼的',
+  '这菜地连蚯蚓都没有，别说鱼了',
+  '驴小驴同志，河在那边→',
+];
+
+const npcs = [];
+function spawnNPC() {
+  if (npcs.length >= 8) return;
+  const side = Math.random() < 0.5 ? -1 : 1;
+  const nx = player.x + side * (15 + Math.floor(Math.random() * 20));
+  const ny = SPAWN_Y - 4 + Math.floor(Math.random() * 10);
+  if (nx < 1 || nx >= MAP_W - 1 || ny < 1 || ny >= MAP_H - 1) return;
+  if (!isWalkable(nx, ny)) return;
+  npcs.push({
+    x: nx, y: ny,
+    px: nx * TILE + TILE/2, py: ny * TILE + TILE/2,
+    name: NPC_NAMES[Math.floor(Math.random() * NPC_NAMES.length)],
+    dir: Math.floor(Math.random() * 4),
+    moveTimer: 0,
+    moveInterval: 1500 + Math.random() * 2000,
+    talkCooldown: 0,
+    hasTalked: false,
+    targetX: 0, targetY: 0,
+    moving: false,
+    color: `hsl(${Math.random()*360}, 50%, 55%)`,
+  });
+}
+for (let i = 0; i < 5; i++) spawnNPC();
+
+// ---- 对话系统 ----
+let dialogueTimer = 0;
+function showDialogue(name, text, duration) {
+  const box = document.getElementById('dialogue-box');
+  box.querySelector('.npc-name').textContent = name;
+  box.querySelector('.dialogue-text').textContent = text;
+  box.style.display = 'block';
+  dialogueTimer = duration || 3000;
+}
+
+// ---- 提示系统 ----
+let tipTimer = 0;
+function showTip(text, duration) {
+  const box = document.getElementById('tip-box');
+  box.textContent = text;
+  box.style.display = 'block';
+  tipTimer = duration || 2500;
+}
+
+// ---- 输入系统 ----
+const keys = {};
+let isMobile = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
+let joystickActive = false, joystickDX = 0, joystickDY = 0;
+
+document.addEventListener('keydown', e => { keys[e.code] = true; });
+document.addEventListener('keyup', e => { keys[e.code] = false; });
+
+// 移动端显示
+if (isMobile) {
+  document.getElementById('joystick-zone').style.display = 'block';
+  document.getElementById('mobile-btns').style.display = 'flex';
+}
+
+// 虚拟摇杆
+const jBase = document.getElementById('joystick-base');
+const jThumb = document.getElementById('joystick-thumb');
+let jTouchId = null;
+
+document.getElementById('joystick-zone').addEventListener('touchstart', e => {
+  e.preventDefault();
+  const t = e.changedTouches[0];
+  jTouchId = t.identifier;
+  joystickActive = true;
+  updateJoystick(t);
+});
+document.addEventListener('touchmove', e => {
+  for (const t of e.changedTouches) {
+    if (t.identifier === jTouchId) { updateJoystick(t); break; }
+  }
+});
+document.addEventListener('touchend', e => {
+  for (const t of e.changedTouches) {
+    if (t.identifier === jTouchId) {
+      jTouchId = null; joystickActive = false;
+      joystickDX = 0; joystickDY = 0;
+      jThumb.style.left = '35px'; jThumb.style.bottom = '35px';
+      break;
+    }
+  }
+});
+
+function updateJoystick(touch) {
+  const rect = jBase.getBoundingClientRect();
+  const cx = rect.left + rect.width / 2;
+  const cy = rect.top + rect.height / 2;
+  let dx = touch.clientX - cx;
+  let dy = touch.clientY - cy;
+  const dist = Math.sqrt(dx*dx + dy*dy);
+  const maxR = 40;
+  if (dist > maxR) { dx = dx/dist*maxR; dy = dy/dist*maxR; }
+  jThumb.style.left = (35 + dx) + 'px';
+  jThumb.style.bottom = (35 - dy) + 'px';
+  joystickDX = dx / maxR;
+  joystickDY = dy / maxR;
+}
+
+// 钓鱼按钮
+document.getElementById('btn-fish').addEventListener('touchstart', e => {
+  e.preventDefault();
+  tryFish();
+});
+document.addEventListener('keydown', e => {
+  if (e.code === 'KeyE' || e.code === 'Space') tryFish();
+});
+
+// ---- 钓鱼逻辑 ----
+function tryFish() {
+  if (player.fishing) return;
+  player.fishing = true;
+  player.fishTimer = 0;
+  player.moveDir = { x: 0, y: 0 };
+  document.getElementById('fish-bar-wrap').style.display = 'block';
+
+  const tx = Math.floor(player.px / TILE);
+  const ty = Math.floor(player.py / TILE);
+
+  if (isVegField(tx, ty)) {
+    showTip('你在菜地里甩出了鱼竿...', 2000);
+  } else if (isNearRiver(tx, ty)) {
+    showTip('甩竿中...感觉这里有鱼！', 1500);
+  } else {
+    showTip('甩竿中...', 1500);
+  }
+}
+
+function finishFishing() {
+  player.fishing = false;
+  document.getElementById('fish-bar-wrap').style.display = 'none';
+  document.getElementById('fish-bar').style.width = '0%';
+
+  const tx = Math.floor(player.px / TILE);
+  const ty = Math.floor(player.py / TILE);
+
+  if (isVegField(tx, ty)) {
+    // 菜地没鱼！
+    const msgs = [
+      '......一条鱼都没有。这里是菜地啊！',
+      '你盯着鱼竿看了半天，菜叶子飘过...',
+      '鱼竿纹丝不动。菜地：你礼貌吗？',
+      '钓了个寂寞。菜地表示很无语。',
+      '一阵风吹过，只有白菜叶在摇晃...',
+      '鱼竿上挂了根菜叶子，权当安慰吧...',
+    ];
+    showTip(msgs[Math.floor(Math.random() * msgs.length)], 3000);
+  } else {
+    // 其他地方能钓到鱼
+    const nearR = isNearRiver(tx, ty);
+    const chance = nearR ? 0.85 : 0.4;
+    if (Math.random() < chance) {
+      const fishTypes = nearR
+        ? ['🐟 鲤鱼', '🐟 草鱼', '🐟 鲫鱼', '🐠 金鱼', '🐡 河豚', '🦐 大虾']
+        : ['🐟 小鱼', '🐟 泥鳅', '🦐 小虾'];
+      const fish = fishTypes[Math.floor(Math.random() * fishTypes.length)];
+      player.fishCount++;
+      document.getElementById('fish-count').textContent = `🐟 鱼篓: ${player.fishCount} 条`;
+      showTip(`钓到了 ${fish}！`, 2500);
+    } else {
+      showTip('鱼跑了...再试试吧！', 2000);
+    }
+  }
+}
+
+// ---- 绘制函数 ----
+function drawTile(screenX, screenY, type, worldX, worldY) {
+  ctx.fillStyle = TILE_COLORS[type] || '#4a7c2e';
+  ctx.fillRect(screenX, screenY, TILE + 1, TILE + 1);
+
+  // 地形装饰
+  if (type === T.RIVER) {
+    // 水波纹
+    ctx.strokeStyle = 'rgba(100,200,255,0.3)';
+    ctx.lineWidth = 1;
+    const waveOff = (Date.now() / 600 + worldX * 0.5) % (TILE * 2);
+    for (let i = -1; i < 3; i++) {
+      ctx.beginPath();
+      ctx.moveTo(screenX, screenY + 12 + i * 16);
+      for (let wx = 0; wx <= TILE; wx += 8) {
+        ctx.lineTo(screenX + wx, screenY + 12 + i * 16 + Math.sin((wx + waveOff) * 0.15) * 3);
+      }
+      ctx.stroke();
+    }
+  }
+  else if (type === T.VEGFIELD) {
+    // 菜苗
+    ctx.fillStyle = '#3a8f25';
+    const seed = worldX * 1000 + worldY;
+    for (let i = 0; i < 4; i++) {
+      const vx = screenX + 8 + (i % 2) * 22 + ((seed + i * 7) % 5);
+      const vy = screenY + 10 + Math.floor(i / 2) * 20 + ((seed + i * 3) % 5);
+      ctx.fillRect(vx, vy, 3, 10);
+      ctx.beginPath();
+      ctx.arc(vx + 1, vy - 2, 5, 0, Math.PI * 2);
+      ctx.fillStyle = '#4aaf30';
+      ctx.fill();
+      ctx.fillStyle = '#3a8f25';
+    }
+    // 泥土行
+    ctx.fillStyle = '#6b5030';
+    ctx.fillRect(screenX, screenY + TILE - 6, TILE, 3);
+  }
+  else if (type === T.TREE) {
+    // 树干
+    ctx.fillStyle = '#5a3a1a';
+    ctx.fillRect(screenX + 19, screenY + 25, 10, 20);
+    // 树冠
+    ctx.fillStyle = '#2d6e1e';
+    ctx.beginPath();
+    ctx.arc(screenX + 24, screenY + 18, 16, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#3a8830';
+    ctx.beginPath();
+    ctx.arc(screenX + 20, screenY + 14, 10, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  else if (type === T.ROCK) {
+    ctx.fillStyle = '#888';
+    ctx.beginPath();
+    ctx.ellipse(screenX + 24, screenY + 30, 18, 14, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#999';
+    ctx.beginPath();
+    ctx.ellipse(screenX + 22, screenY + 26, 12, 9, -0.3, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  else if (type === T.BRIDGE) {
+    ctx.fillStyle = '#8B6914';
+    ctx.fillRect(screenX, screenY, TILE, TILE);
+    ctx.strokeStyle = '#6B4914';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(screenX + 4, screenY + 4, TILE - 8, TILE - 8);
+    // 木板纹
+    ctx.strokeStyle = '#7B5914';
+    for (let i = 0; i < 3; i++) {
+      ctx.beginPath();
+      ctx.moveTo(screenX, screenY + 12 + i * 14);
+      ctx.lineTo(screenX + TILE, screenY + 12 + i * 14);
+      ctx.stroke();
+    }
+  }
+  else if (type === T.FLOWER) {
+    // 花
+    const seed2 = worldX * 31 + worldY * 17;
+    const colors = ['#f44', '#ff0', '#f0f', '#fa0', '#f8a'];
+    for (let i = 0; i < 3; i++) {
+      const fx = screenX + 8 + ((seed2 + i * 13) % 28);
+      const fy = screenY + 8 + ((seed2 + i * 19) % 28);
+      ctx.fillStyle = '#3a7a25';
+      ctx.fillRect(fx + 2, fy + 4, 2, 8);
+      ctx.fillStyle = colors[(seed2 + i) % colors.length];
+      ctx.beginPath();
+      ctx.arc(fx + 3, fy + 2, 4, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+  else if (type === T.SAND) {
+    ctx.fillStyle = '#c8b67a';
+    ctx.fillRect(screenX, screenY, TILE + 1, TILE + 1);
+    ctx.fillStyle = '#b8a66a';
+    for (let i = 0; i < 5; i++) {
+      const sx = screenX + ((worldX*7+i*17)%40);
+      const sy = screenY + ((worldY*11+i*13)%40);
+      ctx.fillRect(sx, sy, 2, 2);
+    }
+  }
+  else if (type === T.PATH) {
+    ctx.fillStyle = '#9e8c6c';
+    ctx.fillRect(screenX, screenY, TILE + 1, TILE + 1);
+    ctx.fillStyle = '#8e7c5c';
+    ctx.fillRect(screenX + 10, screenY, TILE - 20, TILE + 1);
+  }
+}
+
+function drawCharacter(screenX, screenY, color, name, dir, isFishing) {
+  ctx.save();
+  ctx.translate(screenX, screenY);
+
+  // 影子
+  ctx.fillStyle = 'rgba(0,0,0,0.25)';
+  ctx.beginPath();
+  ctx.ellipse(0, 16, 12, 5, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  // 身体
+  ctx.fillStyle = color;
+  ctx.fillRect(-8, -10, 16, 20);
+
+  // 头
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  ctx.arc(0, -16, 10, 0, Math.PI * 2);
+  ctx.fill();
+
+  // 眼睛
+  ctx.fillStyle = '#000';
+  if (dir !== 3) { // 不是背面
+    ctx.fillRect(-4, -18, 3, 3);
+    ctx.fillRect(2, -18, 3, 3);
+  }
+
+  // 名字
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 11px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText(name, 0, -30);
+
+  // 钓鱼动画
+  if (isFishing) {
+    ctx.strokeStyle = '#8B6914';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(6, -5);
+    const rodAngle = Math.sin(Date.now() / 500) * 0.1;
+    const rodEndX = 6 + Math.cos(-0.8 + rodAngle) * 35;
+    const rodEndY = -5 + Math.sin(-0.8 + rodAngle) * 35;
+    ctx.lineTo(rodEndX, rodEndY);
+    ctx.stroke();
+    // 鱼线
+    ctx.strokeStyle = '#aaa';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(rodEndX, rodEndY);
+    ctx.lineTo(rodEndX + 5, rodEndY + 20 + Math.sin(Date.now()/300) * 3);
+    ctx.stroke();
+    // 浮标
+    ctx.fillStyle = '#f00';
+    ctx.beginPath();
+    ctx.arc(rodEndX + 5, rodEndY + 22 + Math.sin(Date.now()/300) * 3, 3, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  ctx.restore();
+}
+
+// ---- 相机 ----
+const camera = { x: 0, y: 0 };
+
+function updateCamera() {
+  camera.x = player.px - W / 2;
+  camera.y = player.py - H / 2;
+}
+
+// ---- 更新 ----
+let lastTime = performance.now();
+let gameStarted = false;
+let introShown = false;
+
+function update(dt) {
+  // 对话/提示计时
+  if (dialogueTimer > 0) {
+    dialogueTimer -= dt;
+    if (dialogueTimer <= 0) document.getElementById('dialogue-box').style.display = 'none';
+  }
+  if (tipTimer > 0) {
+    tipTimer -= dt;
+    if (tipTimer <= 0) document.getElementById('tip-box').style.display = 'none';
+  }
+
+  // 开场提示
+  if (!introShown) {
+    introShown = true;
+    showTip('欢迎来到平沙！\n在这里找个好地方钓鱼吧~\n' + (isMobile ? '摇杆移动，点🎣钓鱼' : 'WASD/方向键移动，E键钓鱼'), 4000);
+    setTimeout(() => showDialogue('系统', '你复活在了菜地旁边，试试在这里钓鱼吧！', 4000), 4500);
+  }
+
+  // 钓鱼中
+  if (player.fishing) {
+    player.fishTimer += dt;
+    const prog = Math.min(player.fishTimer / player.fishDuration, 1);
+    document.getElementById('fish-bar').style.width = (prog * 100) + '%';
+    if (player.fishTimer >= player.fishDuration) finishFishing();
+    // NPC 检查
+    checkNPCReaction();
+    return; // 钓鱼时不能移动
+  }
+
+  // 玩家移动
+  let mx = 0, my = 0;
+  if (keys['KeyW'] || keys['ArrowUp']) my = -1;
+  if (keys['KeyS'] || keys['ArrowDown']) my = 1;
+  if (keys['KeyA'] || keys['ArrowLeft']) mx = -1;
+  if (keys['KeyD'] || keys['ArrowRight']) mx = 1;
+
+  // 摇杆
+  if (joystickActive) {
+    mx = Math.abs(joystickDX) > 0.2 ? joystickDX : 0;
+    my = Math.abs(joystickDY) > 0.2 ? joystickDY : 0;
+  }
+
+  if (mx !== 0 || my !== 0) {
+    const len = Math.sqrt(mx*mx + my*my);
+    mx /= len; my /= len;
+
+    const spd = player.speed * TILE * dt / 1000 * 3;
+    const npx = player.px + mx * spd;
+    const npy = player.py + my * spd;
+
+    // 方向
+    if (Math.abs(my) > Math.abs(mx)) player.dir = my < 0 ? 3 : 0;
+    else player.dir = mx < 0 ? 1 : 2;
+
+    // 碰撞检测
+    const ntx = Math.floor(npx / TILE);
+    const nty = Math.floor(npy / TILE);
+    const ctx2 = Math.floor(player.px / TILE);
+    const cty = Math.floor(player.py / TILE);
+
+    if (isWalkable(Math.floor(npx / TILE), cty)) player.px = npx;
+    if (isWalkable(ctx2, Math.floor(npy / TILE))) player.py = npy;
+
+    // 边界
+    player.px = Math.max(TILE, Math.min((MAP_W - 1) * TILE, player.px));
+    player.py = Math.max(TILE, Math.min((MAP_H - 1) * TILE, player.py));
+
+    player.x = Math.floor(player.px / TILE);
+    player.y = Math.floor(player.py / TILE);
+  }
+
+  // NPC 更新
+  updateNPCs(dt);
+
+  // 定时刷 NPC
+  if (Math.random() < 0.001) spawnNPC();
+}
+
+function updateNPCs(dt) {
+  for (const npc of npcs) {
+    npc.moveTimer += dt;
+    npc.talkCooldown = Math.max(0, npc.talkCooldown - dt);
+
+    // 随机移动
+    if (npc.moveTimer >= npc.moveInterval) {
+      npc.moveTimer = 0;
+      npc.moveInterval = 1500 + Math.random() * 2500;
+      // 随机朝玩家方向移动或随机方向
+      const toPlayer = Math.random() < 0.4;
+      if (toPlayer) {
+        const dx = player.px - npc.px, dy = player.py - npc.py;
+        const dist = Math.sqrt(dx*dx+dy*dy);
+        if (dist > 0) {
+          npc.targetX = npc.px + (dx/dist) * TILE * (1 + Math.random()*2);
+          npc.targetY = npc.py + (dy/dist) * TILE * (1 + Math.random()*2);
+        }
+      } else {
+        npc.targetX = npc.px + (Math.random()-0.5) * TILE * 4;
+        npc.targetY = npc.py + (Math.random()-0.5) * TILE * 4;
+      }
+      npc.moving = true;
+    }
+
+    // 移动
+    if (npc.moving) {
+      const dx = npc.targetX - npc.px;
+      const dy = npc.targetY - npc.py;
+      const dist = Math.sqrt(dx*dx + dy*dy);
+      if (dist < 3) {
+        npc.moving = false;
+      } else {
+        const spd = 1.5 * TILE * dt / 1000;
+        const nmx = dx / dist * spd;
+        const nmy = dy / dist * spd;
+        const ntx = Math.floor((npc.px + nmx) / TILE);
+        const nty = Math.floor((npc.py + nmy) / TILE);
+        if (isWalkable(ntx, nty)) {
+          npc.px += nmx;
+          npc.py += nmy;
+          if (Math.abs(dy) > Math.abs(dx)) npc.dir = dy < 0 ? 3 : 0;
+          else npc.dir = dx < 0 ? 1 : 2;
+        } else {
+          npc.moving = false;
+        }
+        npc.x = Math.floor(npc.px / TILE);
+        npc.y = Math.floor(npc.py / TILE);
+      }
+    }
+
+    // 路过看到玩家钓鱼就吐槽
+    if (!player.fishing) npc.hasTalked = false;
+  }
+
+  // 清理太远的NPC
+  for (let i = npcs.length - 1; i >= 0; i--) {
+    const dx = npcs[i].px - player.px, dy = npcs[i].py - player.py;
+    if (dx*dx+dy*dy > (50*TILE)*(50*TILE)) npcs.splice(i, 1);
+  }
+}
+
+function checkNPCReaction() {
+  const ptx = Math.floor(player.px / TILE);
+  const pty = Math.floor(player.py / TILE);
+  const inVeg = isVegField(ptx, pty);
+
+  for (const npc of npcs) {
+    if (npc.talkCooldown > 0 || npc.hasTalked) continue;
+    const dx = npc.px - player.px, dy = npc.py - player.py;
+    const dist = Math.sqrt(dx*dx+dy*dy);
+
+    if (dist < TILE * 6) {
+      if (inVeg) {
+        // 在菜地钓鱼 → 吐槽
+        const line = NPC_VEGFIELD_LINES[Math.floor(Math.random() * NPC_VEGFIELD_LINES.length)];
+        showDialogue(npc.name, line, 3500);
+        npc.talkCooldown = 8000;
+        npc.hasTalked = true;
+      } else if (dist < TILE * 4 && Math.random() < 0.01) {
+        // 正常钓鱼偶尔闲聊
+        const line = NPC_IDLE_LINES[Math.floor(Math.random() * NPC_IDLE_LINES.length)];
+        showDialogue(npc.name, line, 3000);
+        npc.talkCooldown = 10000;
+        npc.hasTalked = true;
+      }
+    }
+  }
+}
+
+// ---- 渲染 ----
+function render() {
+  updateCamera();
+  ctx.clearRect(0, 0, W, H);
+
+  // 背景
+  ctx.fillStyle = '#3a6a25';
+  ctx.fillRect(0, 0, W, H);
+
+  // 可见范围
+  const startTX = Math.max(0, Math.floor(camera.x / TILE) - 1);
+  const startTY = Math.max(0, Math.floor(camera.y / TILE) - 1);
+  const endTX = Math.min(MAP_W, startTX + Math.ceil(W / TILE) + 3);
+  const endTY = Math.min(MAP_H, startTY + Math.ceil(H / TILE) + 3);
+
+  // 绘制地图
+  for (let ty = startTY; ty < endTY; ty++) {
+    for (let tx = startTX; tx < endTX; tx++) {
+      const sx = tx * TILE - camera.x;
+      const sy = ty * TILE - camera.y;
+      drawTile(sx, sy, map[ty][tx], tx, ty);
+    }
+  }
+
+  // 收集所有需要绘制的角色，按y排序
+  const chars = [];
+  chars.push({ px: player.px, py: player.py, color: '#4488ff', name: '驴小驴', dir: player.dir, fishing: player.fishing, isPlayer: true });
+  for (const npc of npcs) {
+    chars.push({ px: npc.px, py: npc.py, color: npc.color, name: npc.name, dir: npc.dir, fishing: false, isPlayer: false });
+  }
+  chars.sort((a, b) => a.py - b.py);
+
+  for (const c of chars) {
+    const sx = c.px - camera.x;
+    const sy = c.py - camera.y;
+    if (sx > -50 && sx < W + 50 && sy > -50 && sy < H + 50) {
+      drawCharacter(sx, sy, c.color, c.name, c.dir, c.fishing);
+    }
+  }
+
+  // 菜地标识
+  const ptx = Math.floor(player.px / TILE);
+  const pty = Math.floor(player.py / TILE);
+  if (isVegField(ptx, pty)) {
+    ctx.fillStyle = 'rgba(255,255,0,0.15)';
+    ctx.font = '13px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillStyle = '#ff0';
+    ctx.fillText('📍 菜地', player.px - camera.x, player.py - camera.y - 42);
+  }
+
+  // 小地图
+  drawMinimap();
+}
+
+function drawMinimap() {
+  const mw = 120, mh = 80;
+  const mx = W - mw - 10, my = 40;
+  ctx.fillStyle = 'rgba(0,0,0,0.5)';
+  ctx.fillRect(mx - 2, my - 2, mw + 4, mh + 4);
+
+  const sx = mw / MAP_W, sy = mh / MAP_H;
+  for (let ty = 0; ty < MAP_H; ty += 2) {
+    for (let tx = 0; tx < MAP_W; tx += 2) {
+      const t = map[ty][tx];
+      if (t === T.RIVER) ctx.fillStyle = '#28a';
+      else if (t === T.VEGFIELD) ctx.fillStyle = '#3a2';
+      else if (t === T.SAND) ctx.fillStyle = '#ca8';
+      else ctx.fillStyle = '#4a3';
+      ctx.fillRect(mx + tx * sx, my + ty * sy, sx * 2 + 1, sy * 2 + 1);
+    }
+  }
+
+  // 玩家点
+  ctx.fillStyle = '#ff0';
+  ctx.fillRect(mx + player.x * sx - 2, my + player.y * sy - 2, 5, 5);
+
+  ctx.fillStyle = '#fff';
+  ctx.font = '10px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('平沙', mx + mw/2, my - 5);
+}
+
+// ---- 主循环 ----
+function gameLoop(now) {
+  const dt = Math.min(now - lastTime, 50); // cap dt
+  lastTime = now;
+  update(dt);
+  render();
+  requestAnimationFrame(gameLoop);
+}
+requestAnimationFrame(gameLoop);
+</script>
+</body>
+</html>
